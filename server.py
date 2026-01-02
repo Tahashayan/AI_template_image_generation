@@ -17,10 +17,8 @@ from diffusers import (
     StableDiffusionInpaintPipeline,
     StableDiffusionControlNetInpaintPipeline,
     ControlNetModel,
-    AutoPipelineForInpainting,
     DPMSolverMultistepScheduler,
 )
-from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
 
 app = Flask(__name__)
 
@@ -31,10 +29,8 @@ TEMPLATE_FOLDER = 'templates'
 MODEL_PATH = 'u2net.pth'
 
 # Model IDs
-SD_MODEL_ID = "runwayml/stable-diffusion-v1-5"
 SD_INPAINT_MODEL_ID = "runwayml/stable-diffusion-inpainting"
 CONTROLNET_TILE_ID = "lllyasviel/control_v11f1e_sd15_tile"
-CONTROLNET_INPAINT_ID = "lllyasviel/control_v11p_sd15_inpaint"
 IP_ADAPTER_MODEL_ID = "h94/IP-Adapter"
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -51,79 +47,79 @@ DTYPE = torch.float16 if torch.cuda.is_available() else torch.float32
 
 STYLE_PRESETS = {
     "auto": {
-        "prompt": "same style as reference, matching lighting and colors, seamless blend, professional quality",
-        "negative": "different style, mismatched colors, obvious edit, artifact, blurry",
+        "prompt": "same style as reference, matching lighting and colors, seamless blend, professional quality, detailed hands with five fingers",
+        "negative": "different style, mismatched colors, obvious edit, artifact, blurry, deformed hands, missing fingers, extra fingers, mutated hands",
         "denoising": 0.5,
         "ip_adapter_scale": 0.6,
         "controlnet_scale": 0.8,
     },
-    # NEW: Avatar-style blue cinematic preset
     "avatar_blue": {
         "prompt": (
             "cinematic portrait in a dark movie theater, character lit by strong blue cinematic light, "
             "blue-tinted skin and clothes, monochrome blue color grading, highly detailed, dramatic "
-            "lighting, professional photography, Avatar style"
+            "lighting, professional photography, Avatar style, perfect hands with five fingers"
         ),
         "negative": (
             "orange lighting, warm skin tones, normal skin color, yellow, green, brown, washed out, "
-            "flat lighting, low contrast, artifacts, cartoon, anime, deformed face, extra limbs"
+            "flat lighting, low contrast, artifacts, cartoon, anime, deformed face, extra limbs, "
+            "deformed hands, missing fingers, extra fingers, mutated hands, bad anatomy"
         ),
         "denoising": 0.55,
         "ip_adapter_scale": 0.7,
         "controlnet_scale": 0.85,
     },
     "avatar_3d": {
-        "prompt": "3D rendered avatar, stylized character, smooth skin, matching environment lighting, CGI quality, Pixar style",
-        "negative": "realistic photo, 2d, flat, ugly, deformed, noisy",
+        "prompt": "3D rendered avatar, stylized character, smooth skin, matching environment lighting, CGI quality, Pixar style, perfect hands",
+        "negative": "realistic photo, 2d, flat, ugly, deformed, noisy, bad hands, deformed fingers",
         "denoising": 0.6,
         "ip_adapter_scale": 0.7,
         "controlnet_scale": 0.7,
     },
     "realistic": {
-        "prompt": "ultra realistic photo, professional photography, natural skin, matching scene lighting, seamless composite",
-        "negative": "cartoon, anime, cgi, artificial, fake looking, obvious edit",
+        "prompt": "ultra realistic photo, professional photography, natural skin, matching scene lighting, seamless composite, anatomically correct hands",
+        "negative": "cartoon, anime, cgi, artificial, fake looking, obvious edit, deformed hands, wrong fingers",
         "denoising": 0.45,
         "ip_adapter_scale": 0.5,
         "controlnet_scale": 0.85,
     },
     "artistic": {
-        "prompt": "artistic portrait, fine art, painterly style, matching artistic environment, museum quality",
-        "negative": "photo realistic, plain, boring, low quality",
+        "prompt": "artistic portrait, fine art, painterly style, matching artistic environment, museum quality, elegant hands",
+        "negative": "photo realistic, plain, boring, low quality, deformed hands",
         "denoising": 0.55,
         "ip_adapter_scale": 0.65,
         "controlnet_scale": 0.75,
     },
     "fantasy": {
-        "prompt": "fantasy character, magical atmosphere, ethereal glow, matching mystical environment, enchanted",
-        "negative": "mundane, realistic, boring, low quality",
+        "prompt": "fantasy character, magical atmosphere, ethereal glow, matching mystical environment, enchanted, perfect anatomy",
+        "negative": "mundane, realistic, boring, low quality, deformed hands, bad fingers",
         "denoising": 0.65,
         "ip_adapter_scale": 0.7,
         "controlnet_scale": 0.7,
     },
     "anime": {
-        "prompt": "anime style, japanese animation, cel shaded, vibrant colors, matching anime background",
-        "negative": "realistic, photo, 3d render, western cartoon",
+        "prompt": "anime style, japanese animation, cel shaded, vibrant colors, matching anime background, proper hand anatomy",
+        "negative": "realistic, photo, 3d render, western cartoon, bad hands",
         "denoising": 0.7,
         "ip_adapter_scale": 0.75,
         "controlnet_scale": 0.65,
     },
     "cinematic": {
-        "prompt": "cinematic shot, movie quality, dramatic lighting, color graded, matching scene atmosphere, film grain",
-        "negative": "amateur, flat lighting, oversaturated, low budget",
+        "prompt": "cinematic shot, movie quality, dramatic lighting, color graded, matching scene atmosphere, film grain, anatomically correct",
+        "negative": "amateur, flat lighting, oversaturated, low budget, deformed hands, missing fingers",
         "denoising": 0.5,
         "ip_adapter_scale": 0.6,
         "controlnet_scale": 0.8,
     },
     "cyberpunk": {
-        "prompt": "cyberpunk style, neon lighting, futuristic, holographic effects, matching neon environment",
-        "negative": "natural, organic, vintage, old fashioned",
+        "prompt": "cyberpunk style, neon lighting, futuristic, holographic effects, matching neon environment, detailed hands",
+        "negative": "natural, organic, vintage, old fashioned, deformed hands",
         "denoising": 0.6,
         "ip_adapter_scale": 0.7,
         "controlnet_scale": 0.7,
     },
     "vintage": {
-        "prompt": "vintage photo, retro film look, nostalgic colors, film grain, matching period setting",
-        "negative": "modern, digital, clean, oversaturated",
+        "prompt": "vintage photo, retro film look, nostalgic colors, film grain, matching period setting, natural hands",
+        "negative": "modern, digital, clean, oversaturated, deformed hands",
         "denoising": 0.5,
         "ip_adapter_scale": 0.6,
         "controlnet_scale": 0.8,
@@ -444,23 +440,18 @@ def load_u2net_model():
 
 
 def load_sd_pipeline_with_ip_adapter():
-    """
-    Load Stable Diffusion Inpainting with ControlNet Tile and IP-Adapter
-    This is the key for style transfer from template to person
-    """
+    """Load Stable Diffusion Inpainting with ControlNet Tile and IP-Adapter"""
     global sd_pipeline, controlnet_tile, ip_adapter_loaded
     
     if sd_pipeline is None:
         print("Loading SD Inpainting + ControlNet Tile + IP-Adapter...")
         
-        # Load ControlNet Tile for detail preservation
         print("  Loading ControlNet Tile...")
         controlnet_tile = ControlNetModel.from_pretrained(
             CONTROLNET_TILE_ID,
             torch_dtype=DTYPE
         )
         
-        # Load SD Inpainting with ControlNet
         print("  Loading SD Inpainting Pipeline...")
         sd_pipeline = StableDiffusionControlNetInpaintPipeline.from_pretrained(
             SD_INPAINT_MODEL_ID,
@@ -470,14 +461,12 @@ def load_sd_pipeline_with_ip_adapter():
             requires_safety_checker=False
         )
         
-        # Use faster scheduler
         sd_pipeline.scheduler = DPMSolverMultistepScheduler.from_config(
             sd_pipeline.scheduler.config
         )
         
         sd_pipeline = sd_pipeline.to(DEVICE)
         
-        # Load IP-Adapter for style transfer
         print("  Loading IP-Adapter...")
         sd_pipeline.load_ip_adapter(
             IP_ADAPTER_MODEL_ID,
@@ -486,7 +475,6 @@ def load_sd_pipeline_with_ip_adapter():
         )
         ip_adapter_loaded = True
         
-        # Memory optimizations
         if torch.cuda.is_available():
             sd_pipeline.enable_attention_slicing()
             try:
@@ -543,6 +531,313 @@ def unload_pipelines():
     print("🗑️ Pipelines unloaded")
 
 
+# ================== HAND DETECTION (OpenCV-based) ==================
+
+def detect_skin_ycrcb(image):
+    """
+    Detect skin regions using YCrCb color space.
+    More robust than HSV for various skin tones.
+    """
+    img_cv = cv2.cvtColor(np.array(image.convert('RGB')), cv2.COLOR_RGB2BGR)
+    ycrcb = cv2.cvtColor(img_cv, cv2.COLOR_BGR2YCrCb)
+    
+    # Skin color ranges in YCrCb (works for most skin tones)
+    lower_skin = np.array([0, 133, 77], dtype=np.uint8)
+    upper_skin = np.array([255, 173, 127], dtype=np.uint8)
+    
+    skin_mask = cv2.inRange(ycrcb, lower_skin, upper_skin)
+    
+    # Morphological operations
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    skin_mask = cv2.morphologyEx(skin_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    skin_mask = cv2.morphologyEx(skin_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    
+    return skin_mask
+
+
+def detect_skin_hsv(image):
+    """
+    Detect skin regions using HSV color space.
+    Alternative method for different lighting conditions.
+    """
+    img_cv = cv2.cvtColor(np.array(image.convert('RGB')), cv2.COLOR_RGB2BGR)
+    hsv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2HSV)
+    
+    # Multiple skin color ranges in HSV
+    lower_skin1 = np.array([0, 20, 70], dtype=np.uint8)
+    upper_skin1 = np.array([20, 255, 255], dtype=np.uint8)
+    lower_skin2 = np.array([170, 20, 70], dtype=np.uint8)
+    upper_skin2 = np.array([180, 255, 255], dtype=np.uint8)
+    
+    mask1 = cv2.inRange(hsv, lower_skin1, upper_skin1)
+    mask2 = cv2.inRange(hsv, lower_skin2, upper_skin2)
+    skin_mask = cv2.bitwise_or(mask1, mask2)
+    
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    skin_mask = cv2.morphologyEx(skin_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    skin_mask = cv2.morphologyEx(skin_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    
+    return skin_mask
+
+
+def analyze_contour_for_hand(contour, image_shape):
+    """
+    Analyze if a contour is likely to be a hand based on shape features.
+    Uses convexity defects and hull analysis.
+    """
+    area = cv2.contourArea(contour)
+    if area < 500:
+        return False, 0
+    
+    # Get convex hull
+    hull = cv2.convexHull(contour)
+    hull_area = cv2.contourArea(hull)
+    
+    if hull_area == 0:
+        return False, 0
+    
+    # Solidity: ratio of contour area to hull area
+    # Hands typically have solidity between 0.5 and 0.9
+    solidity = area / hull_area
+    
+    # Aspect ratio check
+    x, y, w, h = cv2.boundingRect(contour)
+    aspect = w / (h + 1e-6)
+    
+    # Hands typically have aspect ratios between 0.4 and 2.5
+    if aspect < 0.3 or aspect > 3.0:
+        return False, 0
+    
+    # Convexity defects for finger detection
+    hull_indices = cv2.convexHull(contour, returnPoints=False)
+    
+    defect_count = 0
+    if len(hull_indices) > 3 and len(contour) > 3:
+        try:
+            defects = cv2.convexityDefects(contour, hull_indices)
+            if defects is not None:
+                for i in range(defects.shape[0]):
+                    s, e, f, d = defects[i, 0]
+                    # d is the depth of the defect
+                    if d > 5000:  # Significant defect (potential finger gap)
+                        defect_count += 1
+        except:
+            pass
+    
+    # Hands typically have 0-5 significant defects (finger gaps)
+    # Score based on hand likelihood
+    score = 0
+    if 0.4 <= solidity <= 0.95:
+        score += 30
+    if 0.4 <= aspect <= 2.5:
+        score += 20
+    if 0 <= defect_count <= 6:
+        score += 20 + defect_count * 5
+    if area > 2000:
+        score += 10
+    
+    return score > 50, score
+
+
+def detect_hands_opencv(image, person_mask=None, face_regions=None, min_hand_area=800):
+    """
+    Detect hand regions using multi-method skin detection and shape analysis.
+    Excludes face regions to focus on hands only.
+    
+    Returns: list of (x, y, w, h) bounding boxes for detected hand regions
+    """
+    img_np = np.array(image.convert('RGB'))
+    h, w = img_np.shape[:2]
+    
+    # Combine YCrCb and HSV skin detection for robustness
+    skin_ycrcb = detect_skin_ycrcb(image)
+    skin_hsv = detect_skin_hsv(image)
+    skin_mask = cv2.bitwise_or(skin_ycrcb, skin_hsv)
+    
+    # Apply person mask if available
+    if person_mask is not None:
+        person_mask_np = np.array(person_mask.convert('L').resize((w, h), Image.Resampling.LANCZOS))
+        skin_mask = cv2.bitwise_and(skin_mask, person_mask_np)
+    
+    # Exclude face regions
+    if face_regions:
+        for (fx, fy, fw, fh) in face_regions:
+            # Expand face region to include neck
+            expand_x = int(fw * 0.3)
+            expand_y_top = int(fh * 0.2)
+            expand_y_bottom = int(fh * 0.5)  # More expansion below face for neck
+            
+            x1 = max(0, fx - expand_x)
+            y1 = max(0, fy - expand_y_top)
+            x2 = min(w, fx + fw + expand_x)
+            y2 = min(h, fy + fh + expand_y_bottom)
+            skin_mask[y1:y2, x1:x2] = 0
+    
+    # Find contours
+    contours, _ = cv2.findContours(skin_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    hand_regions = []
+    hand_scores = []
+    
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < min_hand_area:
+            continue
+        
+        # Analyze if this is likely a hand
+        is_hand, score = analyze_contour_for_hand(contour, (h, w))
+        
+        if is_hand or area > min_hand_area * 3:  # Large skin regions are likely hands/arms
+            x, y, cw, ch = cv2.boundingRect(contour)
+            
+            # Add generous padding
+            padding_x = int(cw * 0.4)
+            padding_y = int(ch * 0.4)
+            
+            x1 = max(0, x - padding_x)
+            y1 = max(0, y - padding_y)
+            x2 = min(w, x + cw + padding_x)
+            y2 = min(h, y + ch + padding_y)
+            
+            hand_regions.append((x1, y1, x2 - x1, y2 - y1))
+            hand_scores.append(score if is_hand else area / 100)
+    
+    # Merge overlapping regions
+    hand_regions = merge_overlapping_regions(hand_regions)
+    
+    return hand_regions
+
+
+def detect_arms_by_position(person_mask, face_regions, image_size):
+    """
+    Detect arm/hand regions based on body position heuristics.
+    Uses anatomical proportions to estimate where hands might be.
+    """
+    if person_mask is None:
+        return []
+    
+    mask_np = np.array(person_mask.convert('L').resize(image_size, Image.Resampling.LANCZOS))
+    h, w = mask_np.shape
+    
+    # Find person bounding box
+    rows = np.any(mask_np > 50, axis=1)
+    cols = np.any(mask_np > 50, axis=0)
+    
+    if not rows.any() or not cols.any():
+        return []
+    
+    rmin, rmax = np.where(rows)[0][[0, -1]]
+    cmin, cmax = np.where(cols)[0][[0, -1]]
+    
+    person_height = rmax - rmin
+    person_width = cmax - cmin
+    person_center_x = (cmin + cmax) // 2
+    
+    # Exclude face area
+    face_bottom = rmin
+    if face_regions:
+        for (fx, fy, fw, fh) in face_regions:
+            face_bottom = max(face_bottom, fy + fh)
+    
+    arm_regions = []
+    
+    # Left arm region (typically starts at about 30% body width from center)
+    # Arms are usually at 40-80% of body height
+    left_arm_x = max(0, cmin - int(person_width * 0.2))
+    left_arm_w = int(person_width * 0.5)
+    arm_y_start = max(face_bottom, rmin + int(person_height * 0.25))
+    arm_y_end = min(rmax, rmin + int(person_height * 0.85))
+    
+    # Check if there's content in left arm region
+    left_region = mask_np[arm_y_start:arm_y_end, left_arm_x:left_arm_x + left_arm_w]
+    if np.any(left_region > 50):
+        arm_regions.append((left_arm_x, arm_y_start, left_arm_w, arm_y_end - arm_y_start))
+    
+    # Right arm region
+    right_arm_x = person_center_x
+    right_arm_w = int(person_width * 0.5) + (cmax - person_center_x)
+    
+    right_region = mask_np[arm_y_start:arm_y_end, right_arm_x:min(w, right_arm_x + right_arm_w)]
+    if np.any(right_region > 50):
+        arm_regions.append((right_arm_x, arm_y_start, right_arm_w, arm_y_end - arm_y_start))
+    
+    return arm_regions
+
+
+def merge_overlapping_regions(regions, overlap_thresh=0.3):
+    """Merge overlapping bounding boxes."""
+    if not regions:
+        return []
+    
+    boxes = list(regions)
+    merged = []
+    used = set()
+    
+    for i in range(len(boxes)):
+        if i in used:
+            continue
+        
+        x1, y1, w1, h1 = boxes[i]
+        merge_x1, merge_y1 = x1, y1
+        merge_x2, merge_y2 = x1 + w1, y1 + h1
+        
+        for j in range(len(boxes)):
+            if i == j or j in used:
+                continue
+            
+            x2, y2, w2, h2 = boxes[j]
+            
+            # Check overlap
+            ox1 = max(merge_x1, x2)
+            oy1 = max(merge_y1, y2)
+            ox2 = min(merge_x2, x2 + w2)
+            oy2 = min(merge_y2, y2 + h2)
+            
+            if ox1 < ox2 and oy1 < oy2:
+                merge_x1 = min(merge_x1, x2)
+                merge_y1 = min(merge_y1, y2)
+                merge_x2 = max(merge_x2, x2 + w2)
+                merge_y2 = max(merge_y2, y2 + h2)
+                used.add(j)
+        
+        used.add(i)
+        merged.append((merge_x1, merge_y1, merge_x2 - merge_x1, merge_y2 - merge_y1))
+    
+    return merged
+
+
+def create_protection_mask(image_size, regions, blur_radius=12, shape='rounded'):
+    """
+    Create a mask to protect specific regions (white = protect, keep original).
+    """
+    mask = Image.new('L', image_size, 0)
+    draw = ImageDraw.Draw(mask)
+    
+    for (x, y, w, h) in regions:
+        if shape == 'ellipse':
+            draw.ellipse([x, y, x + w, y + h], fill=255)
+        elif shape == 'rounded':
+            radius = min(w, h) // 4
+            draw.rounded_rectangle([x, y, x + w, y + h], radius=radius, fill=255)
+        else:
+            draw.rectangle([x, y, x + w, y + h], fill=255)
+    
+    if blur_radius > 0:
+        mask = mask.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    
+    return mask
+
+
+def create_hand_protection_mask(image_size, hand_regions, blur_radius=15):
+    """Create mask specifically for hand protection with extra feathering."""
+    return create_protection_mask(image_size, hand_regions, blur_radius=blur_radius, shape='rounded')
+
+
+def create_eye_protection_mask(image_size, eye_regions, blur_radius=10):
+    """Create mask to protect eyes."""
+    return create_protection_mask(image_size, eye_regions, blur_radius=blur_radius, shape='ellipse')
+
+
 # ================== IMAGE PROCESSING ==================
 
 def create_tile_condition(image, resolution=512):
@@ -580,20 +875,6 @@ def detect_faces_and_eyes(image):
             ))
     
     return all_faces, all_eyes
-
-
-def create_eye_protection_mask(image_size, eye_regions, blur_radius=10):
-    """Create mask to protect eyes (white = protect, keep original)"""
-    mask = Image.new('L', image_size, 0)
-    draw = ImageDraw.Draw(mask)
-    
-    for (x, y, w, h) in eye_regions:
-        draw.ellipse([x, y, x + w, y + h], fill=255)
-    
-    if blur_radius > 0:
-        mask = mask.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-    
-    return mask
 
 
 def get_edge_mask(alpha, edge_width=5):
@@ -708,11 +989,9 @@ def remove_background(image, erode_size=3, feather=2):
 def place_person_on_template(person_rgba, template_path=None, position='center', scale=0.85, padding=0.05):
     """Step 2: Place person on template"""
     
-    # Load template
     if template_path and os.path.exists(template_path):
         template = Image.open(template_path).convert('RGBA')
     else:
-        # Create default gradient template
         template = Image.new('RGBA', (1080, 1920), (100, 150, 200, 255))
         template_np = np.array(template)
         for y in range(template_np.shape[0]):
@@ -725,7 +1004,6 @@ def place_person_on_template(person_rgba, template_path=None, position='center',
     template_width, template_height = template.size
     original_template = template.copy()
     
-    # Crop person to bounding box
     person_arr = np.array(person_rgba)
     alpha = person_arr[:, :, 3]
     rows = np.any(alpha > 10, axis=1)
@@ -738,7 +1016,6 @@ def place_person_on_template(person_rgba, template_path=None, position='center',
     cmin, cmax = np.where(cols)[0][[0, -1]]
     person_cropped = person_rgba.crop((cmin, rmin, cmax + 1, rmax + 1))
     
-    # Scale person
     target_height = int(template_height * scale)
     aspect = person_cropped.width / person_cropped.height
     target_width = int(target_height * aspect)
@@ -750,7 +1027,6 @@ def place_person_on_template(person_rgba, template_path=None, position='center',
     
     person_resized = person_cropped.resize((target_width, target_height), Image.Resampling.LANCZOS)
     
-    # Calculate position
     pad_px = int(template_height * padding)
     positions = {
         'center': ((template_width - target_width) // 2, (template_height - target_height) // 2),
@@ -761,11 +1037,9 @@ def place_person_on_template(person_rgba, template_path=None, position='center',
     }
     x, y = positions.get(position, positions['center'])
     
-    # Composite
     composite = template.copy()
     composite.paste(person_resized, (x, y), person_resized)
     
-    # Create person mask (full size)
     person_mask = Image.new('L', (template_width, template_height), 0)
     person_alpha = person_resized.split()[3]
     person_mask.paste(person_alpha, (x, y))
@@ -784,38 +1058,30 @@ def place_person_on_template(person_rgba, template_path=None, position='center',
 # ============ BLUE COLOR GRADE FOR AVATAR LOOK ============
 
 def apply_blue_tone_to_person(composite_image, person_mask, strength=0.9):
-    """
-    Shift the colors of the person region towards cinematic blue while
-    preserving shading. Uses HSV hue shift + saturation/brightness boost.
-    Only affects pixels where person_mask > 0.
-    """
+    """Apply blue color grade to person region only."""
     if person_mask is None:
         return composite_image
 
     composite_image = composite_image.convert("RGB")
     w, h = composite_image.size
 
-    # Ensure mask matches composite size
     mask = person_mask.resize((w, h), Image.Resampling.LANCZOS).convert("L")
     mask_np = np.array(mask).astype(np.float32) / 255.0
     if mask_np.max() < 0.05:
-        # No person area
         return composite_image
 
     img_np = np.array(composite_image)
     mask_3d = np.stack([mask_np] * 3, axis=2)
 
-    # Convert to HSV via OpenCV
     img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
 
-    h, s, v = cv2.split(hsv)
+    h_channel, s, v = cv2.split(hsv)
 
-    # OpenCV hue range: 0-179, blue ~ 110
     target_hue = 110.0
-    h_blue = (1.0 - strength) * h + strength * target_hue
+    h_blue = (1.0 - strength) * h_channel + strength * target_hue
     s_blue = np.clip(s + strength * 70.0, 0, 255)
-    v_blue = np.clip(v + strength * 10.0, 0, 255)  # slight brightness lift
+    v_blue = np.clip(v + strength * 10.0, 0, 255)
 
     hsv_blue = cv2.merge([h_blue, s_blue, v_blue]).astype(np.uint8)
     img_bgr_blue = cv2.cvtColor(hsv_blue, cv2.COLOR_HSV2BGR)
@@ -842,18 +1108,19 @@ def style_match_inpaint(
     controlnet_scale=None,
     num_inference_steps=30,
     preserve_eyes=True,
+    preserve_hands=True,
     eye_regions=None,
+    hand_regions=None,
     seed=None,
     use_ip_adapter=True
 ):
     """
     Use SD Inpainting + IP-Adapter + ControlNet Tile to match person to template style.
+    Preserves eyes and hands by blending original pixels back.
     """
     
-    # Get preset
     preset = STYLE_PRESETS.get(style_preset, STYLE_PRESETS["auto"])
     
-    # Use custom or preset values
     denoising = denoising_strength if denoising_strength is not None else preset["denoising"]
     ip_scale = ip_adapter_scale if ip_adapter_scale is not None else preset["ip_adapter_scale"]
     cn_scale = controlnet_scale if controlnet_scale is not None else preset["controlnet_scale"]
@@ -865,11 +1132,9 @@ def style_match_inpaint(
     print(f"📝 Prompt: {prompt[:80]}...")
     print(f"⚙️ Denoising: {denoising}, IP-Adapter: {ip_scale}, ControlNet: {cn_scale}")
     
-    # Prepare images
     composite_rgb = composite_image.convert('RGB')
     original_size = composite_rgb.size
     
-    # Resize for SD (must be multiple of 8)
     w, h = original_size
     max_size = 768
     scale = min(max_size / max(w, h), 1.0)
@@ -880,21 +1145,14 @@ def style_match_inpaint(
     mask_resized = person_mask.resize((new_w, new_h), Image.Resampling.LANCZOS)
     template_resized = original_template.convert('RGB').resize((new_w, new_h), Image.Resampling.LANCZOS)
     
-    # Generator for reproducibility
     generator = torch.Generator(device=DEVICE).manual_seed(seed) if seed is not None else None
     
-    # Try to use full pipeline with IP-Adapter
     if use_ip_adapter:
         try:
             pipeline = load_sd_pipeline_with_ip_adapter()
-            
-            # Set IP-Adapter scale
             pipeline.set_ip_adapter_scale(ip_scale)
-            
-            # Create tile condition (the composite itself for structure)
             tile_condition = create_tile_condition(composite_resized, resolution=new_w)
             
-            # Run inpainting with IP-Adapter (template as style reference)
             with torch.inference_mode():
                 result = pipeline(
                     prompt=prompt,
@@ -918,7 +1176,6 @@ def style_match_inpaint(
             use_ip_adapter = False
     
     if not use_ip_adapter:
-        # Fallback to simple inpainting
         pipeline = load_sd_pipeline_simple()
         
         with torch.inference_mode():
@@ -935,29 +1192,33 @@ def style_match_inpaint(
         
         print("✅ Generated with simple inpainting")
     
-    # Resize back
     result = result.resize(original_size, Image.Resampling.LANCZOS)
     
-    # === RESTORE ORIGINAL TEMPLATE (background must stay exactly same) ===
+    # === RESTORE ORIGINAL TEMPLATE (background) ===
     result_np = np.array(result).astype(np.float32)
     template_np = np.array(original_template.convert('RGB').resize(original_size)).astype(np.float32)
     composite_np = np.array(composite_image.convert('RGB')).astype(np.float32)
     
-    # Person mask
     mask_np = np.array(person_mask.convert('L')).astype(np.float32) / 255.0
     mask_3d = np.stack([mask_np] * 3, axis=2)
     
-    # Replace background with original template
     result_np = result_np * mask_3d + template_np * (1 - mask_3d)
     
     # === PRESERVE EYES ===
     if preserve_eyes and eye_regions:
+        print(f"   👁️ Preserving {len(eye_regions)} eye regions")
         eye_mask = create_eye_protection_mask(original_size, eye_regions, blur_radius=8)
         eye_mask_np = np.array(eye_mask).astype(np.float32) / 255.0
         eye_3d = np.stack([eye_mask_np] * 3, axis=2)
-        
-        # Blend original eyes back (from composite_image)
         result_np = result_np * (1 - eye_3d) + composite_np * eye_3d
+    
+    # === PRESERVE HANDS ===
+    if preserve_hands and hand_regions:
+        print(f"   ✋ Preserving {len(hand_regions)} hand/arm regions")
+        hand_mask = create_hand_protection_mask(original_size, hand_regions, blur_radius=15)
+        hand_mask_np = np.array(hand_mask).astype(np.float32) / 255.0
+        hand_3d = np.stack([hand_mask_np] * 3, axis=2)
+        result_np = result_np * (1 - hand_3d) + composite_np * hand_3d
     
     result = Image.fromarray(result_np.astype(np.uint8))
     
@@ -979,10 +1240,12 @@ def process_artgen(
     controlnet_scale=None,
     num_steps=30,
     preserve_eyes=True,
+    preserve_hands=True,
     use_ip_adapter=True,
     erode_size=3,
     feather=2,
-    seed=None
+    seed=None,
+    hand_detection_sensitivity=0.8
 ):
     """
     Complete Art-Gen Pipeline:
@@ -990,8 +1253,9 @@ def process_artgen(
     1. Remove background with U2Net
     2. Place person on template
     3. (Optional) Apply blue color grade to person (for avatar_blue style)
-    4. Detect eyes (for protection)
-    5. Inpaint with IP-Adapter (template as style reference) + ControlNet Tile
+    4. Detect eyes and hands (for protection)
+    5. Inpaint with IP-Adapter + ControlNet Tile
+    6. Restore original eyes and hands
     """
     
     print("=" * 50)
@@ -1024,20 +1288,68 @@ def process_artgen(
         composite = apply_blue_tone_to_person(composite, person_mask, strength=0.9)
         print("   ✓ Blue tone applied to person region")
     
-    # STEP 4: Detect eyes for preservation
+    # STEP 4: Detect faces, eyes, and hands for preservation
     eye_regions = []
-    if preserve_eyes and person_resized:
-        print("\n👁️ Step 4: Detecting eyes...")
-        _, detected_eyes = detect_faces_and_eyes(person_resized.convert('RGB'))
+    hand_regions = []
+    face_regions = []
+    
+    if person_resized:
+        person_rgb = person_resized.convert('RGB')
         px, py = fg_pos
-        for (ex, ey, ew, eh) in detected_eyes:
-            eye_regions.append((px + ex, py + ey, ew, eh))
-        print(f"   ✓ Found {len(eye_regions)} eye regions")
+        
+        # Detect faces and eyes
+        if preserve_eyes:
+            print("\n👁️ Step 4a: Detecting eyes...")
+            detected_faces, detected_eyes = detect_faces_and_eyes(person_rgb)
+            
+            # Offset to composite coordinates
+            for (fx, fy, fw, fh) in detected_faces:
+                face_regions.append((px + fx, py + fy, fw, fh))
+            
+            for (ex, ey, ew, eh) in detected_eyes:
+                eye_regions.append((px + ex, py + ey, ew, eh))
+            
+            print(f"   ✓ Found {len(detected_faces)} faces, {len(eye_regions)} eye regions")
+        
+        # Detect hands
+        if preserve_hands:
+            print("\n✋ Step 4b: Detecting hands...")
+            
+            # Create person-only mask for hand detection
+            person_alpha = person_resized.split()[3]
+            
+            # Get face regions relative to person (for exclusion)
+            relative_faces = [(fx - px, fy - py, fw, fh) for (fx, fy, fw, fh) in face_regions]
+            
+            # Detect hands using skin color and shape analysis
+            min_hand_area = int(500 * hand_detection_sensitivity)
+            detected_hands = detect_hands_opencv(
+                person_rgb, 
+                person_mask=Image.fromarray(np.array(person_alpha)),
+                face_regions=relative_faces,
+                min_hand_area=min_hand_area
+            )
+            
+            # If no hands detected by color, try position-based detection
+            if not detected_hands:
+                print("   ℹ️ Color-based detection found no hands, trying position heuristics...")
+                detected_hands = detect_arms_by_position(
+                    Image.fromarray(np.array(person_alpha)),
+                    relative_faces,
+                    (person_resized.width, person_resized.height)
+                )
+            
+            # Offset to composite coordinates
+            for (hx, hy, hw, hh) in detected_hands:
+                hand_regions.append((px + hx, py + hy, hw, hh))
+            
+            print(f"   ✓ Found {len(hand_regions)} hand/arm regions")
     
     # STEP 5: Style Matching with SD + IP-Adapter
     print("\n🎨 Step 5: Style matching with Stable Diffusion...")
-    print(f"   Using IP-Adapter to copy style from template")
-    print(f"   Using ControlNet Tile to preserve details")
+    print(f"   Using IP-Adapter: {use_ip_adapter}")
+    print(f"   Preserve eyes: {preserve_eyes} ({len(eye_regions)} regions)")
+    print(f"   Preserve hands: {preserve_hands} ({len(hand_regions)} regions)")
     
     result = style_match_inpaint(
         composite_image=composite,
@@ -1051,7 +1363,9 @@ def process_artgen(
         controlnet_scale=controlnet_scale,
         num_inference_steps=num_steps,
         preserve_eyes=preserve_eyes,
+        preserve_hands=preserve_hands,
         eye_regions=eye_regions,
+        hand_regions=hand_regions,
         seed=seed,
         use_ip_adapter=use_ip_adapter
     )
@@ -1105,360 +1419,17 @@ print(f"Templates: {get_available_templates() or 'None (will use default)'}")
 print(f"Styles: {list(STYLE_PRESETS.keys())}")
 
 
-# ================== FLASK ROUTES ==================
-
-@app.route('/')
-def home():
-    templates = get_available_templates()
-    template_opts = ''.join([f'<option value="{t}">{t}</option>' for t in templates])
-
-    # default style for UI
-    default_style = "avatar_blue"
-    style_opts = ''.join([
-        f'<option value="{s}" {"selected" if s == default_style else ""}>{s.replace("_", " ").title()}</option>'
-        for s in STYLE_PRESETS.keys()
-    ])
-    
-    return f'''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>🎨 Art-Gen with IP-Adapter</title>
-        <style>
-            * {{ box-sizing: border-box; }}
-            body {{ 
-                font-family: 'Segoe UI', Arial, sans-serif; 
-                max-width: 1100px; 
-                margin: 0 auto; 
-                padding: 20px; 
-                background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%); 
-                color: #eee; 
-                min-height: 100vh;
-            }}
-            .header {{ text-align: center; padding: 20px 0; }}
-            .header h1 {{ 
-                font-size: 2.8em; 
-                margin: 0;
-                background: linear-gradient(90deg, #f857a6, #ff5858);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-            }}
-            .header p {{ color: #aaa; font-size: 1.1em; }}
-            
-            .card {{
-                background: rgba(255,255,255,0.05);
-                border-radius: 16px;
-                padding: 25px;
-                margin: 20px 0;
-                backdrop-filter: blur(10px);
-                border: 1px solid rgba(255,255,255,0.1);
-            }}
-            
-            .workflow {{
-                display: flex;
-                justify-content: space-around;
-                flex-wrap: wrap;
-                gap: 15px;
-                margin: 20px 0;
-            }}
-            .step {{
-                background: rgba(248,87,166,0.1);
-                padding: 15px 20px;
-                border-radius: 12px;
-                text-align: center;
-                flex: 1;
-                min-width: 150px;
-            }}
-            .step-num {{
-                background: linear-gradient(90deg, #f857a6, #ff5858);
-                color: white;
-                width: 30px;
-                height: 30px;
-                border-radius: 50%;
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                font-weight: bold;
-                margin-bottom: 8px;
-            }}
-            
-            .form-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }}
-            
-            .form-group {{ margin: 15px 0; }}
-            label {{ 
-                display: block; 
-                margin-bottom: 8px; 
-                font-weight: 600; 
-                color: #f857a6;
-            }}
-            
-            input, select, textarea {{
-                width: 100%;
-                padding: 12px;
-                border-radius: 8px;
-                border: 2px solid rgba(248,87,166,0.3);
-                background: rgba(0,0,0,0.3);
-                color: #fff;
-                font-size: 14px;
-                transition: border-color 0.3s;
-            }}
-            input:focus, select:focus, textarea:focus {{
-                outline: none;
-                border-color: #f857a6;
-            }}
-            
-            button {{
-                background: linear-gradient(90deg, #f857a6, #ff5858);
-                color: white;
-                padding: 16px 50px;
-                border: none;
-                border-radius: 30px;
-                font-size: 18px;
-                font-weight: bold;
-                cursor: pointer;
-                transition: transform 0.2s, box-shadow 0.2s;
-            }}
-            button:hover {{
-                transform: translateY(-3px);
-                box-shadow: 0 10px 30px rgba(248,87,166,0.4);
-            }}
-            
-            .section-title {{
-                color: #ff5858;
-                font-size: 1.2em;
-                margin-bottom: 15px;
-                padding-bottom: 10px;
-                border-bottom: 2px solid rgba(255,88,88,0.3);
-            }}
-            
-            .tip {{
-                background: rgba(248,87,166,0.1);
-                padding: 15px;
-                border-radius: 10px;
-                border-left: 4px solid #f857a6;
-                margin: 15px 0;
-            }}
-            
-            .slider-container {{
-                display: flex;
-                align-items: center;
-                gap: 10px;
-            }}
-            input[type="range"] {{
-                flex: 1;
-                -webkit-appearance: none;
-                height: 8px;
-                border-radius: 4px;
-                background: rgba(248,87,166,0.3);
-            }}
-            input[type="range"]::-webkit-slider-thumb {{
-                -webkit-appearance: none;
-                width: 20px;
-                height: 20px;
-                border-radius: 50%;
-                background: #f857a6;
-                cursor: pointer;
-            }}
-            
-            .status {{
-                display: flex;
-                gap: 20px;
-                flex-wrap: wrap;
-                padding: 15px;
-                background: rgba(0,0,0,0.3);
-                border-radius: 10px;
-            }}
-            .status span {{
-                padding: 5px 12px;
-                background: rgba(248,87,166,0.2);
-                border-radius: 20px;
-                font-size: 0.9em;
-            }}
-            
-            pre {{
-                background: rgba(0,0,0,0.4);
-                padding: 20px;
-                border-radius: 10px;
-                overflow-x: auto;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="header">
-            <h1>🎨 Art-Gen</h1>
-            <p>AI-Powered Style Transfer with IP-Adapter & ControlNet</p>
-        </div>
-        
-        <div class="card">
-            <div class="workflow">
-                <div class="step">
-                    <div class="step-num">1</div>
-                    <div><strong>U2Net</strong><br>Background Removal</div>
-                </div>
-                <div class="step">
-                    <div class="step-num">2</div>
-                    <div><strong>Compose</strong><br>Place on Template</div>
-                </div>
-                <div class="step">
-                    <div class="step-num">3</div>
-                    <div><strong>Blue Grade</strong><br>Avatar Style</div>
-                </div>
-                <div class="step">
-                    <div class="step-num">4</div>
-                    <div><strong>IP-Adapter</strong><br>Copy Template Style</div>
-                </div>
-                <div class="step">
-                    <div class="step-num">5</div>
-                    <div><strong>ControlNet</strong><br>Preserve Details</div>
-                </div>
-            </div>
-        </div>
-        
-        <div class="status">
-            <span>🧠 U2Net: {"✅" if u2net_model else "⏳"}</span>
-            <span>🎨 SD+IP-Adapter: {"✅" if sd_pipeline else "⏳ Loads on use"}</span>
-            <span>💻 {DEVICE}</span>
-        </div>
-        
-        <form action="/artgen" method="post" enctype="multipart/form-data">
-            <div class="card">
-                <h3 class="section-title">📷 Input Images</h3>
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label>Person Image:</label>
-                        <input type="file" name="image" accept="image/*" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Template (Style Reference):</label>
-                        <select name="template">
-                            <option value="">Random Template</option>
-                            <option value="__default__">Default Gradient</option>
-                            {template_opts}
-                        </select>
-                    </div>
-                </div>
-                
-                <div class="tip">
-                    💡 <strong>Avatar Blue</strong> style will make the person blue and match your cinema-style template.
-                </div>
-            </div>
-            
-            <div class="card">
-                <h3 class="section-title">🎨 Style Settings</h3>
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label>Style Preset:</label>
-                        <select name="style">
-                            {style_opts}
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Position:</label>
-                        <select name="position">
-                            <option value="center">Center</option>
-                            <option value="bottom-center">Bottom Center</option>
-                            <option value="top-center">Top Center</option>
-                            <option value="left">Left</option>
-                            <option value="right">Right</option>
-                        </select>
-                    </div>
-                </div>
-                
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label>Denoising Strength (0.3-0.7): <span id="denoise-val">Auto</span></label>
-                        <div class="slider-container">
-                            <input type="range" name="denoising" min="0.3" max="0.7" step="0.05" value="0.5" 
-                                   oninput="document.getElementById('denoise-val').textContent=this.value">
-                            <small>Low=subtle, High=more change</small>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label>IP-Adapter Scale (0.3-0.9): <span id="ip-val">Auto</span></label>
-                        <div class="slider-container">
-                            <input type="range" name="ip_scale" min="0.3" max="0.9" step="0.05" value="0.7"
-                                   oninput="document.getElementById('ip-val').textContent=this.value">
-                            <small>Style transfer strength</small>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label>ControlNet Scale (0.5-1.0): <span id="cn-val">Auto</span></label>
-                        <div class="slider-container">
-                            <input type="range" name="cn_scale" min="0.5" max="1.0" step="0.05" value="0.85"
-                                   oninput="document.getElementById('cn-val').textContent=this.value">
-                            <small>Detail preservation</small>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label>Scale (Person Size):</label>
-                        <input type="number" name="scale" value="0.85" min="0.3" max="1.0" step="0.05">
-                    </div>
-                </div>
-            </div>
-            
-            <div class="card">
-                <h3 class="section-title">⚙️ Advanced</h3>
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label>Inference Steps:</label>
-                        <input type="number" name="steps" value="30" min="15" max="50">
-                    </div>
-                    <div class="form-group">
-                        <label>Seed (optional):</label>
-                        <input type="number" name="seed" placeholder="Random">
-                    </div>
-                </div>
-                
-                <div class="form-group">
-                    <label>
-                        <input type="checkbox" name="preserve_eyes" value="true" checked>
-                        👁️ Preserve Original Eyes
-                    </label>
-                    &nbsp;&nbsp;
-                    <label>
-                        <input type="checkbox" name="use_ip_adapter" value="true" checked>
-                        🎨 Use IP-Adapter (Style Transfer)
-                    </label>
-                </div>
-                
-                <div class="form-group">
-                    <label>Custom Prompt (optional):</label>
-                    <textarea name="custom_prompt" rows="2" placeholder="Override auto-generated prompt..."></textarea>
-                </div>
-                <div class="form-group">
-                    <label>Custom Negative Prompt:</label>
-                    <textarea name="custom_negative" rows="2" placeholder="Things to avoid..."></textarea>
-                </div>
-            </div>
-            
-            <div style="text-align: center; margin: 30px 0;">
-                <button type="submit">🚀 Generate Art</button>
-            </div>
-        </form>
-        
-        <div class="card">
-            <h3 class="section-title">📡 API</h3>
-            <pre>
-curl -X POST \\
-  -F "image=@person.jpg" \\
-  -F "template=your_cinema_template.png" \\
-  -F "style=avatar_blue" \\
-  -F "denoising=0.55" \\
-  -F "ip_scale=0.7" \\
-  -F "preserve_eyes=true" \\
-  http://localhost:5000/artgen -o result.png
-            </pre>
-        </div>
-    </body>
-    </html>
-    '''
-
+# ================== FLASK API ROUTES ==================
 
 @app.route('/artgen', methods=['POST'])
 def artgen():
+    """
+    Main Art-Gen endpoint.
+    
+    curl example:
+    curl -X POST -F "image=@person.jpg" -F "template=template.png" -F "style=avatar_blue" \
+         -F "preserve_hands=true" -F "preserve_eyes=true" http://localhost:5000/artgen -o result.png
+    """
     if 'image' not in request.files:
         return jsonify({'error': 'No image'}), 400
     
@@ -1486,7 +1457,10 @@ def artgen():
     seed = int(seed) if seed else None
     
     preserve_eyes = request.form.get('preserve_eyes', 'true').lower() == 'true'
+    preserve_hands = request.form.get('preserve_hands', 'true').lower() == 'true'
     use_ip_adapter = request.form.get('use_ip_adapter', 'true').lower() == 'true'
+    
+    hand_sensitivity = float(request.form.get('hand_sensitivity', 0.8))
     
     custom_prompt = request.form.get('custom_prompt', '').strip() or None
     custom_negative = request.form.get('custom_negative', '').strip() or None
@@ -1494,7 +1468,6 @@ def artgen():
     try:
         image = Image.open(file.stream).convert('RGB')
         
-        # Get template path
         if template_name == '__default__':
             template_path = None
         elif template_name:
@@ -1504,7 +1477,6 @@ def artgen():
         else:
             template_path = get_template_path()
         
-        # Process
         result = process_artgen(
             person_image=image,
             template_path=template_path,
@@ -1518,8 +1490,10 @@ def artgen():
             controlnet_scale=cn_scale,
             num_steps=steps,
             preserve_eyes=preserve_eyes,
+            preserve_hands=preserve_hands,
             use_ip_adapter=use_ip_adapter,
-            seed=seed
+            seed=seed,
+            hand_detection_sensitivity=hand_sensitivity
         )
         
         img_io = io.BytesIO()
@@ -1535,7 +1509,12 @@ def artgen():
 
 @app.route('/cutout', methods=['POST'])
 def cutout():
-    """Just background removal"""
+    """
+    Background removal only.
+    
+    curl example:
+    curl -X POST -F "image=@person.jpg" http://localhost:5000/cutout -o cutout.png
+    """
     if 'image' not in request.files:
         return jsonify({'error': 'No image'}), 400
     
@@ -1555,8 +1534,63 @@ def cutout():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/styles')
+@app.route('/detect_hands', methods=['POST'])
+def detect_hands_endpoint():
+    """
+    Debug endpoint to visualize hand detection.
+    
+    curl example:
+    curl -X POST -F "image=@person.jpg" http://localhost:5000/detect_hands -o hands_debug.png
+    """
+    if 'image' not in request.files:
+        return jsonify({'error': 'No image'}), 400
+    
+    file = request.files['image']
+    sensitivity = float(request.form.get('sensitivity', 0.8))
+    
+    try:
+        image = Image.open(file.stream).convert('RGB')
+        
+        # Detect faces first
+        faces, eyes = detect_faces_and_eyes(image)
+        
+        # Detect hands
+        min_area = int(500 * sensitivity)
+        hands = detect_hands_opencv(image, person_mask=None, face_regions=faces, min_hand_area=min_area)
+        
+        # Draw detection results
+        img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        
+        # Draw face regions (blue)
+        for (x, y, w, h) in faces:
+            cv2.rectangle(img_cv, (x, y), (x + w, y + h), (255, 0, 0), 2)
+            cv2.putText(img_cv, 'Face', (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+        
+        # Draw eye regions (green)
+        for (x, y, w, h) in eyes:
+            cv2.rectangle(img_cv, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        
+        # Draw hand regions (red)
+        for (x, y, w, h) in hands:
+            cv2.rectangle(img_cv, (x, y), (x + w, y + h), (0, 0, 255), 3)
+            cv2.putText(img_cv, 'Hand', (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        
+        result = Image.fromarray(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
+        
+        img_io = io.BytesIO()
+        result.save(img_io, 'PNG')
+        img_io.seek(0)
+        return send_file(img_io, mimetype='image/png')
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/styles', methods=['GET'])
 def list_styles():
+    """List available style presets."""
     return jsonify({name: {
         'denoising': p['denoising'],
         'ip_adapter_scale': p['ip_adapter_scale'],
@@ -1565,26 +1599,31 @@ def list_styles():
     } for name, p in STYLE_PRESETS.items()})
 
 
-@app.route('/templates')
+@app.route('/templates', methods=['GET'])
 def list_templates():
+    """List available templates."""
     return jsonify({'templates': get_available_templates()})
 
 
-@app.route('/health')
+@app.route('/health', methods=['GET'])
 def health():
+    """Health check endpoint."""
     return jsonify({
         'u2net': u2net_model is not None,
         'sd_pipeline': sd_pipeline is not None,
         'ip_adapter': ip_adapter_loaded,
-        'device': str(DEVICE)
+        'device': str(DEVICE),
+        'preserve_hands': True,
+        'preserve_eyes': True
     })
 
 
 @app.route('/unload', methods=['POST'])
 def unload():
+    """Unload SD pipelines to free memory."""
     unload_pipelines()
     return jsonify({'status': 'unloaded'})
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=False)
